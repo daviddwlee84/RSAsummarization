@@ -1,0 +1,6 @@
+nltk
+tensorflow
+sklearn
+shutil
+pyrouge
+numpy
