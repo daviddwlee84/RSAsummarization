@@ -65,10 +65,10 @@ max_len = 250
 
 VERBOSE = False # if not VERBOSE, then it is always override mode
 if not VERBOSE:
-    currtime= time.time()
+    log_file_name = 'test/call_log' + str(time.time()) + '.log'
     # https://stackoverflow.com/questions/11269575/how-to-hide-output-of-subprocess-in-python-2-7
-    CallLog = open('test/call_log' + str(currtime) + '.log', 'w')
-    print 'Since you are not in VERBOSE mode. Use tail -f currtime to see the log of the subprocesses.'
+    CallLog = open(log_file_name, 'w')
+    print 'Since you are not in VERBOSE mode. Use tail -f', log_file_name, 'to track the log of the subprocesses.'
 
 
 def pp(string):
@@ -438,3 +438,6 @@ if __name__ == "__main__":
             score_p_r_f1, score_bleu = evaluate(summaries, topic)
             # print 'Performance of', topic, 'of', score_func_to_use, 'is', score_p_r_f1, score_bleu
             print 'Performance of', topic, 'of', score_func_to_use, 'is', score_bleu
+
+    if not VERBOSE:
+        CallLog.close()
