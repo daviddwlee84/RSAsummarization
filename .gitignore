@@ -1,7 +1,7 @@
 pretrained_model_tf1.2.1*
 GoogleNews-vectors-negative300.bin.gz
-finish_files
-test/temp_file
+finish_files/
+test/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

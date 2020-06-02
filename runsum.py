@@ -1,7 +1,8 @@
 #!/usr/bin/python
 # encoding=utf-8
-from subprocess import call
+from subprocess import call, STDOUT
 from glob import glob
+import nltk
 from nltk.corpus import stopwords
 import os, struct
 from tensorflow.core.example import example_pb2
@@ -11,6 +12,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from nltk.stem.porter import *
 from ast import literal_eval
+import time
 stemmer = PorterStemmer()
 
 
@@ -41,19 +43,32 @@ TEST_PAPER = {key: value.replace('oracle', 'src') for key, value in DATA_TO_TEST
 PAPER_REF = {key: value.replace('oracle', 'ref') for key, value in DATA_TO_TEST.items()}
 
 
-ratio = 1
-
 # 4000 is too short and will cause error in batcher.py during initialization
 # I guess it means the maximum "words" in a single paper. If a paper has 500 sentences...
 # In run_summarization.py: tf.app.flags.DEFINE_integer('max_enc_steps', 400, 'max timesteps of encoder (max source text tokens)')
-max_enc = 8000
+# ratio = 1
+# max_enc = 8000
+
+# Shorten the document with ratio to reduce the max_enc length
+# ratio = 0.4
+# max_enc = 4000
+ratio = 0.2
+max_enc = 2000
 
 cmd = 'python2 run_summarization.py --mode=decode --single_pass=1 --coverage=True --vocab_path=finished_files/vocab --log_root=. --exp_name=pretrained_model_tf1.2.1 --data_path=test/temp_file/{} --max_enc_steps={}'
 
-generated_path = 'pretrained_model_tf1.2.1/decode_test_{}maxenc_4beam_35mindec_100maxdec_ckpt-238410/'.format(max_enc)
+generated_path = 'pretrained_model_tf1.2.1/decode_test_{}maxenc_4beam_35mindec_100maxdec_ckpt-238410'.format(max_enc)
 stopwords = set(stopwords.words('english'))
 
 max_len = 250
+
+
+VERBOSE = False # if not VERBOSE, then it is always override mode
+if not VERBOSE:
+    currtime= time.time()
+    # https://stackoverflow.com/questions/11269575/how-to-hide-output-of-subprocess-in-python-2-7
+    CallLog = open('test/call_log' + str(currtime) + '.log', 'w')
+    print 'Since you are not in VERBOSE mode. Use tail -f currtime to see the log of the subprocesses.'
 
 
 def pp(string):
@@ -105,26 +120,27 @@ def paper_iterator(topic):
 def ones(sent, ref): return 1.
 
 def count_score(sent, ref):
+    # ref = pp(ref).split()
     ref = pp(ref).split()
     sent = ' '.join(pp(w) for w in sent.lower().split() if not w in stopwords)
     return sum([1. if w in ref else 0. for w in sent.split()])
 
 
-# def get_w2v_score_func(magic = 10):
-#     import gensim
-#     google = gensim.models.KeyedVectors.load_word2vec_format(
-#         'GoogleNews-vectors-negative300.bin', binary=True)
-#     def w2v_score(sent, ref):
-#         ref = ref.lower()
-#         sent = sent.lower()
-#         sent = [w for w in sent.split() if w in google]
-#         ref = [w for w in ref.split() if w in google]
-#         try:
-#             score = google.n_similarity(sent, ref)
-#         except:
-#             score = 0.
-#         return score * magic
-#     return w2v_score
+def get_w2v_score_func(magic = 10):
+    import gensim
+    google = gensim.models.KeyedVectors.load_word2vec_format(
+        'GoogleNews-vectors-negative300.bin', binary=True)
+    def w2v_score(sent, ref):
+        ref = ref.lower()
+        sent = sent.lower()
+        sent = [w for w in sent.split() if w in google]
+        ref = [w for w in ref.split() if w in google]
+        try:
+            score = google.n_similarity(sent, ref)
+        except:
+            score = 0.
+        return score * magic
+    return w2v_score
 
 # def get_tfidf_score_func_glob(magic = 1):
 #     corpus = []
@@ -167,20 +183,19 @@ def get_tfidf_score_func(topic, magic = 10):
     return tfidf_score_func
 
 
-def just_relevant(text, query):
-    text = text.split(' . ')
-    score_per_sent = [count_score(sent, query) for sent in text]
-    sents_gold = list(zip(*sorted(zip(score_per_sent, text), reverse=True)))[1]
+def just_relevant(sents, query, score_func):
+    score_per_sent = [count_score(sent, query) for sent in sents]
+    sents_gold = list(zip(*sorted(zip(score_per_sent, sents), reverse=True)))[1]
     sents_gold = sents_gold[:int(len(sents_gold)*ratio)]
 
     filtered_sents = []
-    for s in text:
+    for s in sents:
         if not s: continue
         if s in sents_gold: filtered_sents.append(s)
-    return ' . '.join(filtered_sents)
+    return filtered_sents
 
 class Summary:
-    def __init__(self, texts, abstracts, query):
+    def __init__(self, texts, abstracts, query, score_func):
         #texts = sorted([(tfidf_score(query, text), text) for text in texts], reverse=True)
         #texts = sorted([(tfidf_score(text, ' '.join(abstracts)), text) for text in texts], reverse=True)
 
@@ -188,9 +203,13 @@ class Summary:
         self.texts = texts
         self.abstracts = abstracts
         self.query = query
+        self.score_func = score_func
         self.summary = []
         self.words = set()
         self.length = 0
+
+        self.sent_num = 0
+        self.word_num = 0
 
     def add_sum(self, summ):
         for sent in summ:
@@ -201,16 +220,25 @@ class Summary:
         #text = texts[0]
         # if ratio < 1: text = just_relevant(text, self.query)
 
-        # sents = text.split(' . ')
-        text = ' '.join(self.texts)
         sents = self.texts
-        score_per_sent = [(score_func(sent, self.query), sent) for sent in sents]
+
+        if ratio < 1:
+            sents = just_relevant(sents, self.query, self.score_func)
+
+        
+        self.sent_num = len(sents)
+        text = ' '.join(sents)
+        self.word_num = len(text.split())
+
+        score_per_sent = [(self.score_func(sent, self.query), sent) for sent in sents]
         #score_per_sent = [(count_score(sent, ' '.join(self.abstracts)), sent) for sent in sents]
 
         scores = []
         for score, sent in score_per_sent:
-            scores += [score] * (len(sent.split()) + 1)
-        scores = str(scores[:-1])
+            scores += [score] * (len(sent.split()))
+        # make sure "word count" is the same as "scores" (one score match one word)
+        assert len(text.split()) == len(scores)
+        scores = str(scores)
         return text, 'a', scores
 
 def get_summaries(path):
@@ -261,29 +289,44 @@ def calculate_performance(predicts, golds):
     }
 
 
-def compute_bleu_raw(gold_sents, predict_sents, gold, predict):
+def compute_bleu_raw(gold_sents, predict_sents, gold=None, predict=None):
     avg_sent_bleu = 0
     chencherry = nltk.translate.bleu_score.SmoothingFunction()
 
     all_references = []
     all_hypothesis = []
 
-    for gs, ps, gid, pid in zip(gold_sents, predict_sents, gold, predict):
+    if gold and predict:
+        for gs, ps, gid, pid in zip(gold_sents, predict_sents, gold, predict):
 
-        gs = [sent for sent, _ in sorted(zip(gs, gid), key=lambda pair: pair[1])]
-        ps = [sent for sent, _ in sorted(zip(ps, pid), key=lambda pair: pair[1])]
+            gs = [sent for sent, _ in sorted(zip(gs, gid), key=lambda pair: pair[1])]
+            ps = [sent for sent, _ in sorted(zip(ps, pid), key=lambda pair: pair[1])]
 
-        references = [sent.split() for sent in gs]
-        hypothesis = [word for sent in ps for word in sent.split()]
+            references = [sent.split() for sent in gs]
+            hypothesis = [word for sent in ps for word in sent.split()]
 
-        avg_sent_bleu += nltk.translate.bleu_score.sentence_bleu(references, hypothesis,
-                                                        smoothing_function=chencherry.method1)
-        
-        all_references.append(references)
-        all_hypothesis.append(hypothesis)
+            avg_sent_bleu += nltk.translate.bleu_score.sentence_bleu(references, hypothesis,
+                                                            smoothing_function=chencherry.method1)
+            
+            all_references.append(references)
+            all_hypothesis.append(hypothesis)
 
-    corpus_bleu = nltk.translate.bleu_score.corpus_bleu(all_references, all_hypothesis)
-    avg_sent_bleu /= len(gold_sents)
+        corpus_bleu = nltk.translate.bleu_score.corpus_bleu(all_references, all_hypothesis)
+        avg_sent_bleu /= len(gold_sents)
+    else:
+        for gs, ps in zip(gold_sents, predict_sents):
+            references = [sent.split() for sent in gs]
+            hypothesis = [word for sent in ps for word in sent.split()]
+
+            avg_sent_bleu += nltk.translate.bleu_score.sentence_bleu(references, hypothesis,
+                                                            smoothing_function=chencherry.method1)
+            
+            all_references.append(references)
+            all_hypothesis.append(hypothesis)
+
+        corpus_bleu = nltk.translate.bleu_score.corpus_bleu(all_references, all_hypothesis,
+                                                    smoothing_function=chencherry.method1)
+        avg_sent_bleu /= len(gold_sents)
 
     return {'corpus_bleu': corpus_bleu, 'avg_sent_bleu': avg_sent_bleu}
 
@@ -293,24 +336,26 @@ def evaluate(summaries, topic):
     golds, predicts, gold_sents, predict_sents = [], [], [], []
 
     src_file = os.path.join(DATAPATH, TEST_PAPER[topic])
-    # with open(src_file, 'r') as stream:
-    #     raw_papers = stream.readlines()
-    # papers = [[sent.strip() for sent in paper.split('##SENT##')] for paper in raw_papers]
+    with open(src_file, 'r') as stream:
+        raw_papers = stream.readlines()
+    papers = [[sent.strip() for sent in paper.split('##SENT##')] for paper in raw_papers]
 
     oracle_file = os.path.join(DATAPATH, DATA_TO_TEST[topic])
     with open(oracle_file, 'r') as stream:
         raw_labels = stream.readlines()
 
-    golds = [literal_eval(raw_label) for raw_label in row_labels]
-    gold_sents = [[papers[i][index] for index in gold_label] for i, gold_label in golds]
+    golds = [literal_eval(raw_label) for raw_label in raw_labels]
+    gold_sents = [[papers[i][index] for index in gold_label] for i, gold_label in enumerate(golds)]
 
     for i, summary in enumerate(summaries):
         predict_sents.append(summary.summary)
-        # predicts.append([papers[i].index(sent) for sent in summary.summary])
-        predicts.append([summary.texts.index(sent) for sent in summary.summary])
+        predicts.append([papers[i].index(sent) for sent in summary.summary if sent in papers[i]])
+        # predicts.append([summary.texts.index(sent) for sent in summary.summary])
     
-    score_p_r_f1 = calculate_performance(predicts, golds)
-    score_bleu = compute_bleu_raw(gold_sents, predict_sents, golds, predicts)
+    # score_p_r_f1 = calculate_performance(predicts, golds)
+    score_p_r_f1 = 'unable to calculate now'
+    # score_bleu = compute_bleu_raw(gold_sents, predict_sents, golds, predicts)
+    score_bleu = compute_bleu_raw(gold_sents, predict_sents)
 
     return score_p_r_f1, score_bleu
 
@@ -321,46 +366,75 @@ def evaluate(summaries, topic):
 # summaries = [Summary(texts, abstracts, query) for texts, abstracts, query in duck_iterator(duc_num)]
 if __name__ == "__main__":
 
-    call(['mkdir', '-p', 'test/temp_file'])
-    call(['mkdir', '-p', os.path.join(OUTPUT_PATH, TARGET)])
+    if VERBOSE:
+        call(['mkdir', '-p', 'test/temp_file'])
+        call(['mkdir', '-p', os.path.join(OUTPUT_PATH, TARGET)])
+    else:
+        call(['mkdir', '-p', 'test/temp_file'], stdout=CallLog, stderr=STDOUT)
+        call(['mkdir', '-p', os.path.join(OUTPUT_PATH, TARGET)], stdout=CallLog, stderr=STDOUT)
+
 
 
     for topic in DATA_TO_TEST.keys():
-        parse = True
-        output_dir = os.path.join(OUTPUT_PATH, TARGET, topic)
-        if os.path.exists(output_dir):
-            override = raw_input('{} result exist, override (delete and inference again)? (Y/n): '.format(topic.capitalize()))
-            if override.lower() == 'y':
-                shutil.rmtree(output_dir)
-            else:
-                parse = False
+        for score_func_to_use in ['RSA-word2vec', 'RSA-TFIDF']:
+            output_dir = os.path.join(OUTPUT_PATH, TARGET, score_func_to_use, topic)
+            parse = True
+            if os.path.exists(output_dir):
+                if VERBOSE:
+                    override = raw_input('{} of {} result exist, override (delete and inference again)? (Y/n): '.format(topic.capitalize(), score_func_to_use))
+                else:
+                    override = 'y'
 
-        if parse:
-            score_func = get_tfidf_score_func(topic)
-            summaries = [Summary(texts, None, query) for texts, query in paper_iterator(topic)]
+                if override.lower() == 'y':
+                    shutil.rmtree(output_dir)
+                else:
+                    parse = False
 
-            with open('test/temp_file/%s' % topic, 'wb') as writer:
-                for summ in summaries:
-                    article, abstract, scores = summ.get()
-                    write_to_file(article, abstract, scores, writer)
-            call(['rm', '-r', generated_path])
-            print 'Getting summarization...'
-            print 'Running command', cmd.format(topic, max_enc)
-            call(cmd.format(topic, max_enc).split())
-            print 'Summarization has generated to', generated_path, 'and copied to', output_dir
-            generated_summaries = get_summaries(generated_path)
 
-            call(['cp', '-r', generated_path, output_dir])
-        
-        else:
+            if score_func_to_use == 'RSA-word2vec':
+                score_func = get_w2v_score_func()
+            elif score_func_to_use == 'RSA-TFIDF':
+                score_func = get_tfidf_score_func(topic)
+            if VERBOSE:
+                print 'Getting summary objects...'
+            summaries = [Summary(texts, None, query, score_func) for texts, query in paper_iterator(topic)]
+
+            if parse:
+                max_word_num = 0
+
+                if VERBOSE:
+                    print 'Calculating score and write it as tensorflow object...'
+                with open('test/temp_file/%s' % topic, 'wb') as writer:
+                    for summ in summaries:
+                        article, abstract, scores = summ.get()
+                        write_to_file(article, abstract, scores, writer)
+                        max_word_num = max(max_word_num, summ.word_num)
+
+                if VERBOSE:
+                    print 'Maximum word number of this topic is', max_word_num
+                    call(['rm', '-r', generated_path])
+                    print 'Getting summarization...'
+                    print 'Running command', cmd.format(topic, max_enc)
+                    call(cmd.format(topic, max_enc).split())
+                else:
+                    call(['rm', '-r', generated_path], stdout=CallLog, stderr=STDOUT)
+                    call(cmd.format(topic, max_enc).split(), stdout=CallLog, stderr=STDOUT)
+                
+                if VERBOSE:
+                    print 'Summarization has generated to', generated_path, 'and copied to', output_dir
+                    call(['mkdir', '-p', os.path.join(OUTPUT_PATH, TARGET, score_func_to_use)])
+                    call(['cp', '-r', generated_path, output_dir])
+                else:
+                    call(['mkdir', '-p', os.path.join(OUTPUT_PATH, TARGET, score_func_to_use)], stdout=CallLog, stderr=STDOUT)
+                    call(['cp', '-r', generated_path, output_dir], stdout=CallLog, stderr=STDOUT)
+            
             generated_summaries = get_summaries(output_dir)
 
-        for i in xrange(len(summaries)):
-            summaries[i].add_sum(generated_summaries[i])
+            for i in xrange(len(summaries)):
+                summaries[i].add_sum(generated_summaries[i])
 
-        import ipdb; ipdb.set_trace()
-
-
-        print 'Evaluating', topic, '...'
-        score_p_r_f1, score_bleu = evaluate(summaries, topic)
-        print 'Performance of', topic, 'is', score_p_r_f1, score_bleu
+            if VERBOSE:
+                print 'Evaluating', topic, 'of', score_func_to_use, '...'
+            score_p_r_f1, score_bleu = evaluate(summaries, topic)
+            # print 'Performance of', topic, 'of', score_func_to_use, 'is', score_p_r_f1, score_bleu
+            print 'Performance of', topic, 'of', score_func_to_use, 'is', score_bleu

@@ -18,6 +18,22 @@
 bash setup_environment.sh
 ```
 
+## Directories
+
+TODO
+
+## Run
+
+```sh
+python2 runsum.py
+```
+
+TODO: variables (e.g. VERBOSE, ...)
+
+## Other important codes
+
+* `run_summarization.py`
+
 ## Trouble Shooting
 
 * [Import NLTK error in Python2.7 · Issue #2534 · nltk/nltk](https://github.com/nltk/nltk/issues/2534)
