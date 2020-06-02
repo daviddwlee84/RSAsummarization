@@ -17,3 +17,7 @@
 ```sh
 bash setup_environment.sh
 ```
+
+## Trouble Shooting
+
+* [Import NLTK error in Python2.7 · Issue #2534 · nltk/nltk](https://github.com/nltk/nltk/issues/2534)
