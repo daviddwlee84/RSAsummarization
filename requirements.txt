@@ -3,3 +3,4 @@ tensorflow==1.2.1
 sklearn
 pyrouge
 numpy
+gensim
