@@ -1,6 +1,5 @@
 nltk
-tensorflow
+tensorflow==1.2.1
 sklearn
-shutil
 pyrouge
 numpy

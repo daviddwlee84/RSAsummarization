@@ -7,3 +7,13 @@
 * [Query Focused Abstractive Summarization: Incorporating Query Relevance, Multi-Document Coverage, and Summary Length Constraints into seq2seq Models](https://arxiv.org/pdf/1801.07704v2.pdf)
 
 > Most of the code in this reposetory was taken from https://github.com/abisee/pointer-generator
+
+## Setup
+
+> This code was written in Python 2
+
+* [pre-trained model](https://drive.google.com/open?id=0B7pQmm-OfDv7ZUhHZm9ZWEZidDg)
+
+```sh
+bash setup_environment.sh
+```
